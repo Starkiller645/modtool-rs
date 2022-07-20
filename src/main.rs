@@ -6,10 +6,12 @@ use fermi::*;
 use std::fs::File;
 use std::path::Path;
 use std::io::Cursor;
+use std::process;
 use std::rc::Rc;
 use std::env;
 use serde::{Serialize, Deserialize};
 use std::cmp::Ordering;
+use async_std;
 use lazy_static::*;
 
 static APP_VERSION: &'static str = "2.0-alpha2";
@@ -20,13 +22,22 @@ enum Page {
     HomePage,
     ProfilePage,
     DownloadPage,
-    Complete
+    Complete,
+    FabricCheckPage,
+    ForgeCheckPage,
+    JavaCheckPage
 }
 
 #[derive(Copy, Clone, Serialize, Deserialize, PartialEq)]
 enum ModLoader {
     Fabric,
     Forge
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+struct ForgeVersion {
+    minecraft: String,
+    forge: String
 }
 
 #[derive(Clone)]
@@ -144,22 +155,39 @@ impl DownloadHandler {
 
 lazy_static! {
     static ref HTTP_CLIENT: reqwest::Client = reqwest::Client::new();
+    static ref CACHE_DIR: String =  {
+        match cfg!(windows) {
+            true => env::var("APPDATA").unwrap() + "\\modtool-rs\\cache\\",
+            false => env::var("HOME").unwrap() + "/.cache/modtool-rs/"
+        }
+    };
+    static ref CONFIG_DIR: String = {
+        match cfg!(windows) {
+            true => env::var("APPDATA").unwrap() + "\\modtool-rs",
+            false => env::var("HOME").unwrap() + "/.config/modtool-rs"
+        }
+    };
+    static ref MC_DATA: MCData = { 
+        let base_dir = match cfg!(windows) {
+            true => { env::var("APPDATA").unwrap() + "\\.minecraft\\"},
+            false => { env::var("HOME").unwrap() + "/.minecraft/" }
+        };
+        MCData {
+            base_dir: base_dir.to_string(),
+            mods_dir: { base_dir.clone() + "mods" }.to_string(),
+            profiles_dir: { base_dir.clone() + "versions" }.to_string(),
+            packs_dir: { base_dir.clone() + "resourcepacks" }.to_string()
+        }
+    };
 }
 
-static MC_DATA: Atom<MCData> = |_| { 
-    let base_dir = match cfg!(windows) {
-        true => { env::var("APPDATA").unwrap() + "\\.minecraft\\"},
-        false => { env::var("HOME").unwrap() + "/.minecraft/" }
-    };
-    MCData {
-        base_dir: base_dir.to_string(),
-        mods_dir: { base_dir.clone() + "mods" }.to_string(),
-        profiles_dir: { base_dir.clone() + "versions" }.to_string(),
-        packs_dir: { base_dir.clone() + "resourcepacks" }.to_string()
-    }
-};
+fn init_dirs() {
+    std::fs::create_dir_all(CONFIG_DIR.as_str()).unwrap();
+    std::fs::create_dir_all(CACHE_DIR.as_str()).unwrap();
+}
 
 fn main() {
+    init_dirs();
     dioxus::desktop::launch_cfg(App, |c| {
         c.with_custom_head("<link href=\"https://tallie.dev/modtool/assets/tailwind.css\" rel=\"stylesheet\" /><style>html {background: #334155; display: flex; flex-direction: column;}</style><script src=\"https://kit.fontawesome.com/a  0e919fade.js\" crossorigin=\"anonymous\"></script><link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.1.1/css/fontawesome.min.css\" integrity=\"sha384-zIaWifL2YFF1qaDiAo0JFgsmasocJ/rqu7LKYH8CoB  EXqGbb9eO+Xi3s6fQhgFWM\" crossorigin=\"anonymous\">".to_string())
     });
@@ -194,6 +222,13 @@ fn PageRouter(cx: Scope) -> Element {
                 Page::Complete => {
                     rsx! { FinishedPage {} }
                 }
+                Page::JavaCheckPage => {
+                    rsx! { JavaCheckPage {} }
+                },
+                Page::ForgeCheckPage => {
+                    rsx! { ForgeCheckPage {} }
+                },
+                _ => rsx! { p{}  }
             }
         }
     })
@@ -228,7 +263,7 @@ fn HomePage(cx: Scope) -> Element {
                   match state.page {
                       Page::HomePage => {
                           let mut state_cpy = state.clone();
-                          state_cpy.page = Page::ProfilePage;
+                          state_cpy.page = Page::JavaCheckPage;
                           atoms.set(STATE.unique_id(), state_cpy);
                       }
                       _ => {}
@@ -285,6 +320,352 @@ fn FinishedPage(cx: Scope) -> Element {
                 p {
                     class: "text-sm text-slate-500 italic text-center",
                     "You can safely close this application now."
+                }
+            }
+        }
+    })
+}
+
+async fn java_check(has_java: UseState<bool>, check_complete: UseState<bool>, java_version: UseState<String>) {
+    let com = "java";
+    let args = match cfg!(windows) {
+        true => &["-version"],
+        false => &["--version"]
+    };
+    let process = match process::Command::new(com)
+        .args(args)
+        .output() {
+            Ok(process) => process,
+            Err(_) => {
+                check_complete.set(true);
+                has_java.set(false);
+                return
+            }
+        };
+    let text = String::from_utf8(process.stdout).unwrap();
+    let text_lines: Vec<&str> = text.split("\n").collect();
+    java_version.set(format!("{}", text_lines[0]));
+    check_complete.set(true);
+    has_java.set(true);
+    println!("{}", text_lines[0]);
+}
+
+async fn forge_install(mc_version: String, found_forge: UseState<bool>, check_complete: UseState<bool>, forge_ver: UseState<String>) {
+    let manifest_res = HTTP_CLIENT
+        .get("https://tallie.dev/modtool/forge_versions.json")
+        .send()
+        .await.unwrap()
+        .text()
+        .await.unwrap();
+    let forge_manifest: Vec<ForgeVersion> = serde_json::from_str(manifest_res.clone().as_str()).unwrap();
+    let mut forge_version: String = String::from("");
+    for version in forge_manifest {
+        if version.minecraft == mc_version {
+            forge_version = version.forge;
+        }
+    }
+
+    let profiles_dir = MC_DATA.profiles_dir.clone();
+    let current_installs = std::fs::read_dir(profiles_dir).unwrap();
+    let mut found = false;
+    for version in current_installs {
+        if format!("{}-forge-{}", mc_version, forge_version) == version.unwrap().file_name().into_string().unwrap() {
+            found = true;
+        }
+    }
+    if found {
+        found_forge.set(true);
+        check_complete.set(true);
+        forge_ver.set(format!("{}-forge-{}", mc_version, forge_version));
+        return
+    }
+
+    let installer_url = format!("https://maven.minecraftforge.net/net/minecraftforge/forge/{0}-{1}/forge-{0}-{1}-installer.jar", mc_version, forge_version);
+    println!("Downloading Forge installer from {}", installer_url);
+    let res = HTTP_CLIENT
+        .get(installer_url.clone())
+        .header("User-Agent", format!("Starkiller645/modtool_rs/{APP_VERSION} (tallie@tallie.dev)"))
+        .send()
+        .await.unwrap();
+
+    let url = format!("{}", installer_url.clone());
+    let path = Path::new(&url);
+    let filename = path.file_name().unwrap();
+    let filepath = format!("{}{}", CACHE_DIR.as_str(), filename.to_str().unwrap());
+    println!("{}", filepath);
+    let mut fhandle = File::create(filepath.clone()).unwrap();
+    let mut content = Cursor::new(res.bytes().await.unwrap());
+    std::io::copy(&mut content, &mut fhandle).unwrap();
+
+    let com = "java";
+    let args = &["-jar", filepath.as_str()];
+    let com = process::Command::new(com)
+        .args(args)
+        .output().unwrap();
+    println!("{}", String::from_utf8(com.stdout).unwrap());
+    let profiles_dir = MC_DATA.profiles_dir.clone();
+    let current_installs = std::fs::read_dir(profiles_dir).unwrap();
+    let mut found = false;
+    for version in current_installs {
+        if version.unwrap().file_name().into_string().unwrap().contains(format!("{}-forge", mc_version).as_str()) {
+            found = true;
+        }
+    }
+
+    println!("Done!");
+
+    if found {
+        found_forge.set(true);
+        check_complete.set(true);
+        forge_ver.set(format!("{}-forge-{}", mc_version, forge_version));
+        found_forge.needs_update();
+        check_complete.needs_update();
+    } else {
+        found_forge.set(false);
+        check_complete.set(true);
+        found_forge.needs_update();
+        check_complete.needs_update();
+    }
+}
+
+async fn fabric_install(version: String) {
+   
+}
+
+fn ForgeCheckPage(cx: Scope) -> Element {
+    let check_complete = use_state(&cx, || false);
+    let has_forge = use_state(&cx, || false);
+    let forge_version = use_state(&cx, || String::from(""));
+
+    let atoms = use_atom_root(&cx);
+    let state = use_read(&cx, STATE);
+
+    use_future(&cx, (), |_| forge_install(String::from("1.12.2"), has_forge.clone(), check_complete.clone(), forge_version.clone()));
+
+/*    if *check_complete.get() && *has_forge.get() {
+        let mut state_cpy = state.clone();
+        state_cpy.page = Page::DownloadPage;
+        atoms.set(STATE.unique_id(), state_cpy);
+    }*/
+
+    cx.render(rsx! {
+        div {
+            id: "forgecheckpage",
+            class: "flex-1 flex-col flex justify-center w-full",
+            match *check_complete.current() {
+                true => { rsx! { 
+                    h2 {
+                        class: "text-6xl text-slate-100 mx-auto text-center font-bold",
+                        "Check complete!"
+                    },
+                    div {
+                        class: "bg-slate-900 rounded-xl p-6 m-6 mx-auto flex-col w-1/2",
+                        match *has_forge.get() {
+                            true => rsx! {
+                                div {
+                                    class: "flex flex-col",
+                                    p {
+                                        class: "text-xl text-slate-300 mx-auto text-center",
+                                        "Found Forge: "
+                                    },
+                                    p {
+                                        class: "text-orange-600 font-bold text-xl text-center",
+                                        "{forge_version}"
+                                    },
+                                    button {
+                                        class: "bg-green-500 hover:bg-green-700 rounded-xl m-6 p-6 align-center mx-auto",
+                                        onclick: move |_| {
+                                            let mut state_cpy = state.clone();
+                                            state_cpy.page = Page::DownloadPage;
+                                            atoms.set(STATE.unique_id(), state_cpy);
+                                        },
+                                        img {
+                                            src: "https://tallie.dev/modtool/assets/fa-arrow-right.svg",
+                                            height: "32",
+                                            width: "32",
+                                            class: "mx-auto fill-slate-100"
+                                        }
+                                    }
+                                }
+                            },
+                            false => rsx! {
+                                div {
+                                    class: "flex flex-col",
+                                    p {
+                                        class: "text-xl text-orange-600 font-bold text-center",
+                                        "Could not install Forge!"
+                                    },
+                                    p {
+                                        class: "text-xl text-slate-100 text-center",
+                                        "Try re-running the program, or download and install Forge manually."
+                                    },
+                                    p {
+                                        class: "text-sm text-slate-500 italic text-center",
+                                        "Forge Mod Loader can be downloaded from ",
+                                        a {
+                                            class: "text-sm text-sky-500 italic underline",
+                                            href: "https://files.minecraftforge.net/",
+                                            "https://files.minecraftforge.net/"
+                                        }
+                                    },
+                                    button {
+                                        class: "bg-red-500 hover:bg-red-700 rounded-xl p-6 m-6 mb-0 mx-auto align-center",
+                                        onclick: move |_| {
+                                            let mut state_cpy = state.clone();
+                                            state_cpy.page = Page::ProfilePage;
+                                            atoms.set(STATE.unique_id(), state_cpy);
+                                        },
+                                        img {
+                                            src: "https://tallie.dev/modtool/assets/fa-arrow-left.svg",
+                                            height: "32",
+                                            width: "32",
+                                            class: "mx-auto fill-slate-100"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }},
+                false => {
+                    rsx! {
+                        h2 {
+                            class: "text-6xl text-slate-100 mx-auto text-center font-bold p-6",
+                            "Installing Forge..."
+                        },
+                        div {
+                            class: "bg-slate-900 rounded-xl p-6 m-6 mx-auto flex-col w-1/2",
+                            p {
+                                class: "text-xl text-slate-100 font-bold text-center",
+                                "Forge is now downloading."
+                            },
+                            p {
+                                class: "text-xl text-slate-100 text-center",
+                                "When the installer window appears, please install Forge normally."
+                            },
+                            p {
+                                class: "text-sm text-slate-500 italic text-center",
+                                "Select ⦿ Install client, click [OK], wait for the install to complete, then click [OK] to finish."
+                            }
+                            img {
+                                src: "https://tallie.dev/modtool/assets/loader-slate-900.gif",
+                                class: "mx-auto pt-6 w-1/2",
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    })
+
+}
+
+fn JavaCheckPage(cx: Scope) -> Element {
+    let state = use_read(&cx, STATE);
+    let atoms = use_atom_root(&cx);
+    let has_java = use_state(&cx, || false);
+    let check_complete = use_state(&cx, || false);
+    let java_version = use_state(&cx, || String::from("1.8.023"));
+
+    use_future(&cx, (), |_| { java_check(has_java.clone(), check_complete.clone(), java_version.clone()) } );
+
+    if *check_complete.get() && *has_java.get() {
+        let mut state_cpy = state.clone();
+        state_cpy.page = Page::ProfilePage;
+        atoms.set(STATE.unique_id(), state_cpy);
+    }
+
+    cx.render(rsx! {
+        div {
+            id: "completepage",
+            class: "flex-1 flex-col flex justify-center w-full",
+            style: "{{font-family: \"Bebas Neue\", sans-serif;}}",
+            match *check_complete.get() {
+                true => { rsx! { 
+                    h2 {
+                        class: "text-6xl text-slate-100 mx-auto text-center font-bold",
+                        "Check complete!"
+                    },
+                    div {
+                        class: "bg-slate-900 rounded-xl p-6 m-6 mx-auto flex-col w-1/2",
+                        match *has_java.get() {
+                            true => rsx! {
+                                div {
+                                    class: "flex flex-col",
+                                    p {
+                                        class: "text-xl text-slate-300 mx-auto text-center",
+                                        "Found Java: "
+                                    },
+                                    p {
+                                        class: "text-orange-600 font-bold text-xl text-center",
+                                        "{java_version}"
+                                    },
+                                    button {
+                                        class: "bg-green-500 hover:bg-green-700 rounded-xl m-6 p-6 align-center shrink flex-0",
+                                        onclick: move |_| {
+                                            let mut state_cpy = state.clone();
+                                            state_cpy.page = Page::HomePage;
+                                            atoms.set(STATE.unique_id(), state_cpy);
+                                        },
+                                        img {
+                                            src: "https://tallie.dev/modtool/assets/fa-arrow-right.svg",
+                                            height: "32",
+                                            width: "32",
+                                            class: "mx-auto fill-slate-100"
+                                        }
+                                    }
+                                }
+                            },
+                            false => rsx! {
+                                div {
+                                    class: "flex flex-col",
+                                    p {
+                                        class: "text-xl text-orange-600 font-bold text-center",
+                                        "Could not find Java!"
+                                    },
+                                    p {
+                                        class: "text-xl text-slate-100 text-center",
+                                        "Please download and install Java, then re-run this application."
+                                    },
+                                    p {
+                                        class: "text-sm text-slate-500 italic text-center",
+                                        "OpenJDK (Temurin) Java can be downloaded from ",
+                                        a {
+                                            class: "text-sm text-sky-500 italic underline",
+                                            href: "https://adoptium.net/",
+                                            "https://adoptium.net/"
+                                        }
+                                    },
+                                    button {
+                                        class: "bg-red-500 hover:bg-red-700 rounded-xl p-6 m-6 mb-0 mx-auto align-center",
+                                        onclick: move |_| {
+                                            std::process::exit(1);
+                                        },
+                                        img {
+                                            src: "https://tallie.dev/modtool/assets/fa-xmark-circle.svg",
+                                            height: "32",
+                                            width: "32",
+                                            class: "mx-auto fill-slate-100"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }},
+                false => {
+                    rsx! {
+                        /*h2 {
+                            class: "text-6xl text-slate-100 mx-auto text-center font-bold p-6",
+                            "Checking for Java..."
+                        },*/
+                        img {
+                            src: "https://tallie.dev/modtool/assets/loader-slate-800.gif",
+                            class: "mx-auto",
+                            width: "256px",
+                            height: "256px"
+                        }   
+                    }
                 }
             }
         }
@@ -484,7 +865,7 @@ fn DownloadPage(cx: Scope) -> Element {
                 },
             },
             div {
-                class: "flex flex-col w-full gap-6",
+                class: "flex flex-col gap-6",
                 div {
                     class: "flex-1 grow bg-slate-900 text-slate-100 p-6 rounded-xl text-sm text-left flex flex-col h-full overflow-y-auto align-stretch",
                     h3 {
@@ -557,25 +938,42 @@ fn DownloadItem(cx: Scope, modinfo: ModDownload, downloads_complete: UseState<i3
     use_future(&cx, (),  |_| {
         let downloads_complete = downloads_complete.clone();
         let download_state = download_state.clone();
-        let mc_data = use_atom_state(&cx, MC_DATA).clone();
+        let mods_dir = MC_DATA.mods_dir.clone();
         let modinfo = modinfo.clone();
         async move {
             let sep = match cfg!(windows) {
                 true => "\\",
                 false => "/",
             };
-
             let res = HTTP_CLIENT
                 .get(modinfo.url.clone())
                 .header("User-Agent", format!("Starkiller645/modtool-rs/{APP_VERSION} (tallie@tallie.dev)"))
                 .send()
                 .await.unwrap();
+            let content_length = res.content_length().unwrap().clone();
+
 			let path = Path::new(&modinfo.url);
 			let filename = path.file_name().unwrap();
-			let filepath = mc_data.mods_dir.clone() + sep + filename.to_str().unwrap();
-            let mut fhandle = File::create(filepath).unwrap();
+			let filepath = mods_dir.clone() + sep + filename.to_str().unwrap();
+            let mut fhandle = File::create(filepath.clone()).unwrap();
+
 			let mut content = Cursor::new(res.bytes().await.unwrap());
 			std::io::copy(&mut content, &mut fhandle).unwrap();
+
+            let thread = std::thread::spawn(move || {
+                println!("Thread started");
+                    println!("Downloading...");
+                    let download = std::fs::File::open(filepath.clone()).unwrap();
+                    let mut file_size = 0;
+                    while file_size < content_length.clone() {
+                        file_size = download.metadata().unwrap().len();
+                        println!("Downloaded {}B", file_size);
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                }
+            );
+
+            thread.join().unwrap();
 
             download_state.set(Download::Complete);
             download_state.needs_update();
@@ -661,9 +1059,18 @@ fn ProfilePage(cx: Scope) -> Element {
             },
             button {
                 onclick: move |_| {
-                    let mut state_cpy = state.clone();
-                    state_cpy.page = Page::DownloadPage;
-                    atoms.set(STATE.unique_id(), state_cpy);
+                    match state.manifest.lookup(state.selected_profile).meta.loader { 
+                    ModLoader::Forge =>  {
+                        let mut state_cpy = state.clone();
+                        state_cpy.page = Page::ForgeCheckPage;
+                        atoms.set(STATE.unique_id(), state_cpy);
+                    },
+                    ModLoader::Fabric => {
+                        let mut state_cpy = state.clone();
+                        state_cpy.page = Page::DownloadPage;
+                        atoms.set(STATE.unique_id(), state_cpy);
+                    }
+                }
                 },
                 class: "hover:bg-green-700 bg-green-500 rounded-xl p-6 m-6 grow-0 my-auto flex-0 shrink",
                 img {
@@ -694,7 +1101,7 @@ fn ManifestPage(cx: Scope) -> Element {
                   "Downloading manifest..."
               },  
               img {
-                  src: "https://tallie.dev/modtool/assets/loader.gif",
+                  src: "https://tallie.dev/modtool/assets/loader-slate-800.gif",
                   class: "mx-auto",
                   width: "256px",
                   height: "256px"
