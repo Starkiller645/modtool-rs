@@ -12,7 +12,7 @@ use serde::{Serialize, Deserialize};
 use std::cmp::Ordering;
 use lazy_static::*;
 
-static APP_VERSION: &'static str = "2.0-alpha1";
+static APP_VERSION: &'static str = "2.0-alpha2";
 
 #[derive(Copy, Clone)]
 enum Page {
