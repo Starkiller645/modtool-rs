@@ -13,6 +13,9 @@ use reqwest::get;
 use serde_json::Result;
 use serde::{Serialize, Deserialize};
 use std::cmp::Ordering;
+use lazy_static::*;
+
+static APP_VERSION: &'static str = "2.0-alpha1";
 
 #[derive(Copy, Clone)]
 enum Page {
@@ -138,6 +141,19 @@ static MOD_DOWNLOADS: Atom<ModDownloads> = |_| { ModDownloads {
     downloads: Vec::new()
 }};
 
+struct DownloadHandler {
+    current_downloads: i32,
+    max_downloads: i32
+}
+
+impl DownloadHandler {
+    async fn download() {}
+}
+
+lazy_static! {
+    static ref HTTP_CLIENT: reqwest::Client = reqwest::Client::new();
+}
+
 static MC_DATA: Atom<MCData> = |_| { 
     let base_dir = match cfg!(windows) {
         true => { env::var("APPDATA").unwrap() + "\\.minecraft\\"},
@@ -242,7 +258,7 @@ fn HomePage(cx: Scope) -> Element {
                   class: "mx-auto fill-slate-100"
               },
             }
-            }
+        }
     })
 }
 
@@ -301,15 +317,15 @@ fn ProfileInfo(cx: Scope, meta: ProfileMeta) -> Element {
     let mut text_primary_color = "text-slate-100";
     let mut text_secondary_color = "text-slate-300";
     let mut bg_primary_color = "bg-slate-700";
-    let mut bg_secondary_color = "bg-slate-600";
-    let mut loader_accent_color = "text-cyan-300";
+    let mut bg_secondary_color = "hover:bg-slate-600";
+    let mut loader_accent_color = "text-sky-500";
     let mut loader_name = "Fabric";
 
     if meta.id == state.selected_profile {
         text_primary_color = "text-slate-900";
         text_secondary_color = "text-slate-600";
         bg_primary_color = "bg-slate-100";
-        bg_secondary_color = "bg-slate-50";
+        bg_secondary_color = "hover:bg-slate-300";
     }
 
     if meta.loader == ModLoader::Forge {
@@ -336,7 +352,7 @@ fn ProfileInfo(cx: Scope, meta: ProfileMeta) -> Element {
     cx.render(rsx! {
         button {
             id: format_args!("profile_{}", meta.id),
-            class: "{bg_primary_color} hover:{bg_secondary_color} rounded-xl shrink {text_primary_color} p-6 text-left",
+            class: "{bg_primary_color} {bg_secondary_color} rounded-xl shrink {text_primary_color} p-6 text-left",
             onclick: move |_| {
                 let mut state_cpy: AppState = state_read.clone();
                 state_cpy.selected_profile = meta.id;
@@ -465,51 +481,57 @@ fn DownloadPage(cx: Scope) -> Element {
     cx.render(rsx! {
         div {
             id: "downloads",
-            class: "flex flex-row flex-1",
+            class: "flex flex-row flex-1 h-full",
             div {
-                class: "flex-1 flex flex-col pr-6 gap-6 overflow-hidden",
-                h2 {
-                    class: "text-6xl font-bold text-slate-100 text-right",
-                    "{current_profile.meta.name}"
-                }
+                class: "overflow-y-auto flex-1",
                 div {
-                    class: "jusify-end self-end justify-self-end flex flex-col gap-6",
-                    sorted_state.iter().map(|modinfo| {
-                        rsx! {
-                            DownloadItem { modinfo: modinfo.clone() , downloads_complete: finished_downloads.clone()}
-                        }
-                    })
-                }
+                    class: "flex-1 flex flex-col pr-6 gap-6",
+                    h2 {
+                        class: "text-6xl font-bold text-slate-100 text-right",
+                        "{current_profile.meta.name}"
+                    }
+                    div {
+                        class: "jusify-end self-end justify-self-end flex flex-col gap-6",
+                        sorted_state.iter().map(|modinfo| {
+                            rsx! {
+                                DownloadItem { modinfo: modinfo.clone() , downloads_complete: finished_downloads.clone()}
+                            }
+                        })
+                    }
+                },
             },
             div {
-                class: "grow-0 flex-0 shrink bg-slate-900 text-slate-100 p-6 rounded-xl w-[25%] text-sm text-left flex flex-col",
-                h3 {
-                    class: "p-4 pl-0",
-                    "REMAINING"
-                },
-                p {
-                    class: "text-huge rounded-xl font-bold text-center bg-sky-500 text-slate-100",
-                    "{remaining_downloads}"
-                },
-                h3 {
-                    class: "p-4 pl-0",
-                    "DOWNLOADED"
-                },
-                p {
-                    class: "text-huge rounded-xl bg-emerald-400 text-slate-100 font-bold text-center",
-                    "{finished_downloads}"
-                },
-                h3 {
-                    class: "p-4 pl-0",
-                    "TOTAL"
-                },
-                p {
-                    class: "text-huge font-bold text-center bg-slate-800 text-slate-100 rounded-xl",
-                    "{total_downloads}"
-                },
+                class: "flex flex-col w-full gap-6",
                 div {
-                    class: "grow flex-1"
-                },
+                    class: "flex-1 grow bg-slate-900 text-slate-100 p-6 rounded-xl text-sm text-left flex flex-col h-full overflow-y-auto align-stretch",
+                    h3 {
+                        class: "p-4 pl-0 gap-6",
+                        "REMAINING"
+                    },
+                    p {
+                        class: "text-huge rounded-xl font-bold text-center bg-sky-500 text-slate-100",
+                        "{remaining_downloads}"
+                    },
+                    h3 {
+                        class: "p-4 pl-0",
+                        "DOWNLOADED"
+                    },
+                    p {
+                        class: "text-huge rounded-xl bg-emerald-400 text-slate-100 font-bold text-center",
+                        "{finished_downloads}"
+                    },
+                    h3 {
+                        class: "p-4 pl-0",
+                        "TOTAL"
+                    },
+                    p {
+                        class: "text-huge font-bold text-center bg-slate-800 text-slate-100 rounded-xl",
+                        "{total_downloads}"
+                    },
+                    div {
+                        class: "grow flex-1"
+                    },
+                }
                 match *finished_downloads.get() == total_downloads {
                     true => rsx! { 
                         button {
@@ -563,11 +585,13 @@ fn DownloadItem(cx: Scope, modinfo: ModDownload, downloads_complete: UseState<i3
             let sep = match cfg!(windows) {
                 true => "\\",
                 false => "/",
-				_ => "/"
             };
 
-            let res = reqwest::get(modinfo.url.clone()).await.unwrap();
-            let path_segments = res.url().path_segments().unwrap();
+            let res = HTTP_CLIENT
+                .get(modinfo.url.clone())
+                .header("User-Agent", "Starkiller645/modtool-rs/{APP_VERSION} (tallie@tallie.dev)")
+                .send()
+                .await.unwrap();
 			let path = Path::new(&modinfo.url);
 			let filename = path.file_name().unwrap();
 			let filepath = mc_data.mods_dir.clone() + sep + filename.to_str().unwrap();
@@ -599,7 +623,7 @@ fn DownloadItem(cx: Scope, modinfo: ModDownload, downloads_complete: UseState<i3
 
     cx.render(rsx! {
         div {
-            class: "flex flex-row bg-slate-900 justify-end p-6 rounded-xl gap-6",
+            class: "flex flex-row bg-slate-900 justify-end p-6 rounded-xl gap-6 flex-1 grow",
             div {
                 class: "flex-1 grow flex-col",
                 h3 {
@@ -645,18 +669,18 @@ fn ProfilePage(cx: Scope) -> Element {
     cx.render(rsx! {
         div {
             id: "profile",
-            class: "flex flex-row flex-1",
+            class: "flex flex-row flex-1 h-full",
             div {
-                class: "flex-1 rounded-xl text-slate-100 m-6 text-6xl font-bold flex flex-col p-6 gap-6 overflow-scroll",
+                class: "flex-1 rounded-xl text-slate-100 m-6 text-6xl font-bold flex flex-col p-6 gap-6 overflow-y-auto",
                 "Profiles",
-                state.manifest.profiles.iter().map(|profile| {
+                    state.manifest.profiles.iter().map(|profile| {
                     let meta = profile.meta.clone();
-                    rsx! {
-                        ProfileInfo {
-                            meta: meta
-                    }
-                }})
-            }
+                        rsx! {
+                            ProfileInfo {
+                                meta: meta
+                        }
+                    }})
+            },
             button {
                 onclick: move |_| {
                     let mut state_cpy = state.clone();
