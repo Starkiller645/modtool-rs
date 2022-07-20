@@ -1,16 +1,13 @@
 #![windows_subsystem = "windows"]
+#![allow(non_snake_case)]
 
 use dioxus::prelude::*;
 use fermi::*;
-use std::thread;
-use std::time::Duration;
 use std::fs::File;
 use std::path::Path;
 use std::io::Cursor;
 use std::rc::Rc;
 use std::env;
-use reqwest::get;
-use serde_json::Result;
 use serde::{Serialize, Deserialize};
 use std::cmp::Ordering;
 use lazy_static::*;
@@ -87,9 +84,6 @@ enum Download {
     Complete
 }
 
-struct DownloadState {
-    state: Download
-}
 
 #[derive(Clone)]
 struct ModDownloads {
@@ -133,14 +127,11 @@ static STATE: Atom<AppState> = |_| AppState {
     }
 };
 
-static MANIFEST: Atom<Manifest> = |_| {Manifest {
-    profiles: Vec::new()
-}};
-
 static MOD_DOWNLOADS: Atom<ModDownloads> = |_| { ModDownloads {
     downloads: Vec::new()
 }};
 
+/*
 struct DownloadHandler {
     current_downloads: i32,
     max_downloads: i32
@@ -149,6 +140,7 @@ struct DownloadHandler {
 impl DownloadHandler {
     async fn download() {}
 }
+*/
 
 lazy_static! {
     static ref HTTP_CLIENT: reqwest::Client = reqwest::Client::new();
@@ -158,10 +150,6 @@ static MC_DATA: Atom<MCData> = |_| {
     let base_dir = match cfg!(windows) {
         true => { env::var("APPDATA").unwrap() + "\\.minecraft\\"},
         false => { env::var("HOME").unwrap() + "/.minecraft/" }
-    };
-    let sep = match cfg!(windows) {
-        true => "\\",
-        false => "/"
     };
     MCData {
         base_dir: base_dir.to_string(),
@@ -178,10 +166,6 @@ fn main() {
 }
 
 fn App(cx: Scope) -> Element {
-
-    let atoms = use_atom_root(&cx);
-    
-    //use_coroutine(&cx, |rx| switch_pages(rx, atoms.clone()));
 
     cx.render(rsx! {
         PageRouter {}
@@ -263,7 +247,6 @@ fn HomePage(cx: Scope) -> Element {
 }
 
 fn FinishedPage(cx: Scope) -> Element {
-    let atoms = use_atom_root(&cx);
     let state = use_read(&cx, STATE);
 
     //use_coroutine(&cx, |rx| to_manifest_page(rx, atoms.clone()));
@@ -391,7 +374,7 @@ fn ProfileInfo(cx: Scope, meta: ProfileMeta) -> Element {
     })
 }
 
-async fn download_all_mod_files(ar: Rc<AtomRoot>) {
+/*async fn download_all_mod_files(ar: Rc<AtomRoot>) {
     let downloads_list = (*ar.read(MOD_DOWNLOADS)).clone();
     for download in downloads_list.downloads.iter() {
         async {
@@ -402,7 +385,7 @@ async fn download_all_mod_files(ar: Rc<AtomRoot>) {
         }.await;
         ar.force_update(MOD_DOWNLOADS.unique_id());
     }
-}
+}*/
 
 fn DownloadPage(cx: Scope) -> Element {
     let ar = use_atom_root(&cx);
@@ -571,14 +554,9 @@ fn DownloadItem(cx: Scope, modinfo: ModDownload, downloads_complete: UseState<i3
 
     let download_state = use_state(&cx, || Download::InProgress);
 
-    let icon_url = match modinfo.status {
-        Download::InProgress => "https://tallie.dev/modtool/assets/loader.gif",
-        Download::Complete => "https://tallie.dev/modtool/assets/fa-check.svg"
-    };
-
-    let download_task = use_future(&cx, (),  |_| {
+    use_future(&cx, (),  |_| {
         let downloads_complete = downloads_complete.clone();
-        let mut download_state = download_state.clone();
+        let download_state = download_state.clone();
         let mc_data = use_atom_state(&cx, MC_DATA).clone();
         let modinfo = modinfo.clone();
         async move {
@@ -589,7 +567,7 @@ fn DownloadItem(cx: Scope, modinfo: ModDownload, downloads_complete: UseState<i3
 
             let res = HTTP_CLIENT
                 .get(modinfo.url.clone())
-                .header("User-Agent", "Starkiller645/modtool-rs/{APP_VERSION} (tallie@tallie.dev)")
+                .header("User-Agent", format!("Starkiller645/modtool-rs/{APP_VERSION} (tallie@tallie.dev)"))
                 .send()
                 .await.unwrap();
 			let path = Path::new(&modinfo.url);
@@ -723,20 +701,6 @@ fn ManifestPage(cx: Scope) -> Element {
               }   
           }   
     })
-}
-
-async fn switch_pages(mut rx: UnboundedReceiver<()>, ar: Rc<AtomRoot>) {
-    let mut state_cpy: AppState = (*ar.read(STATE)).clone();
-    thread::sleep(Duration::from_millis(1000));
-    state_cpy.page = Page::HomePage;
-    ar.set(STATE.unique_id(), state_cpy);
-}
-
-async fn to_manifest_page(mut rx: UnboundedReceiver<()>, ar: Rc<AtomRoot>) {
-    let mut state_cpy: AppState = (*ar.read(STATE)).clone();
-    thread::sleep(Duration::from_millis(3000));
-    state_cpy.page = Page::ManifestDownloadPage;
-    ar.set(STATE.unique_id(), state_cpy);
 }
 
 async fn manifest_download_handler(ar: Rc<AtomRoot>) {
