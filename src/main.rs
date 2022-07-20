@@ -14,7 +14,7 @@ use std::cmp::Ordering;
 use async_std;
 use lazy_static::*;
 
-static APP_VERSION: &'static str = "2.0-alpha2";
+static APP_VERSION: &'static str = "2.0-alpha3";
 
 #[derive(Copy, Clone)]
 enum Page {
