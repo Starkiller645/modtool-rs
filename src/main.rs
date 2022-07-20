@@ -228,6 +228,9 @@ fn PageRouter(cx: Scope) -> Element {
                 Page::ForgeCheckPage => {
                     rsx! { ForgeCheckPage {} }
                 },
+                Page::FabricCheckPage => {
+                    rsx! { FabricCheckPage {} }
+                },
                 _ => rsx! { p{}  }
             }
         }
@@ -374,6 +377,13 @@ async fn forge_install(mc_version: String, found_forge: UseState<bool>, check_co
         }
     }
     if found {
+        for file in std::fs::read_dir(MC_DATA.mods_dir.clone()).unwrap() {
+            let file = file.unwrap();
+            match std::fs::remove_file(file.path()) {
+                Ok(_) => {},
+                Err(_) => {}
+            }
+        }
         found_forge.set(true);
         check_complete.set(true);
         forge_ver.set(format!("{}-forge-{}", mc_version, forge_version));
@@ -415,6 +425,13 @@ async fn forge_install(mc_version: String, found_forge: UseState<bool>, check_co
     println!("Done!");
 
     if found {
+        for file in std::fs::read_dir(MC_DATA.mods_dir.clone()).unwrap() {
+            let file = file.unwrap();
+            match std::fs::remove_file(file.path()) {
+                Ok(_) => {},
+                Err(_) => {}
+            }
+        }
         found_forge.set(true);
         check_complete.set(true);
         forge_ver.set(format!("{}-forge-{}", mc_version, forge_version));
@@ -428,8 +445,188 @@ async fn forge_install(mc_version: String, found_forge: UseState<bool>, check_co
     }
 }
 
-async fn fabric_install(version: String) {
-   
+async fn fabric_install(mc_version: String, found_fabric: UseState<bool>, check_complete: UseState<bool>, fabric_version: UseState<String>) {
+   let profiles_dir = MC_DATA.profiles_dir.clone();
+    let current_installs = std::fs::read_dir(profiles_dir).unwrap();
+    let mut found = false;
+    let mut ver = String::from("");
+    for version in current_installs {
+        let fname = version.unwrap().file_name().into_string().unwrap();
+        if fname.contains("fabric-loader") && fname.contains(mc_version.as_str()) {
+            found = true;
+            let info_arr = fname.split("-").collect::<Vec<&str>>();
+            if info_arr.len() > 2 {
+                ver = String::from(info_arr[2]);
+            } else {
+                ver = String::from("unknown");
+            }
+        }
+    }
+    if found {
+        for file in std::fs::read_dir(MC_DATA.mods_dir.clone()).unwrap() {
+            let file = file.unwrap();
+            match std::fs::remove_file(file.path()) {
+                Ok(_) => {},
+                Err(_) => {}
+            }
+        }
+        found_fabric.set(true);
+        check_complete.set(true);
+        fabric_version.set(format!("Fabric {} for Minecraft {}", ver, mc_version));
+        return
+    }
+
+    let installer_url = format!("https://maven.fabricmc.net/net/fabricmc/fabric-installer/0.11.0/fabric-installer-0.11.0.jar");
+    println!("Downloading Fabric installer from {}", installer_url);
+    let res = HTTP_CLIENT
+        .get(installer_url.clone())
+        .header("User-Agent", format!("Starkiller645/modtool_rs/{APP_VERSION} (tallie@tallie.dev)"))
+        .send()
+        .await.unwrap();
+
+    let url = format!("{}", installer_url.clone());
+    let path = Path::new(&url);
+    let filename = path.file_name().unwrap();
+    let filepath = format!("{}{}", CACHE_DIR.as_str(), filename.to_str().unwrap());
+    println!("{}", filepath);
+    let mut fhandle = File::create(filepath.clone()).unwrap();
+    let mut content = Cursor::new(res.bytes().await.unwrap());
+    std::io::copy(&mut content, &mut fhandle).unwrap();
+
+    let com = "java";
+    let args = &["-jar", filepath.as_str(), "client", "-mcversion", mc_version.as_str(), "-dir", MC_DATA.base_dir.as_str()];
+    let com = process::Command::new(com)
+        .args(args)
+        .output().unwrap();
+
+    println!("{}", String::from_utf8(com.stdout).unwrap());
+    let profiles_dir = MC_DATA.profiles_dir.clone();
+    let current_installs = std::fs::read_dir(profiles_dir).unwrap();
+    let mut found = false;
+    for version in current_installs {
+        let fname = version.unwrap().file_name().into_string().unwrap();
+        if fname.contains("fabric-loader") && fname.contains(mc_version.as_str()) {
+            found = true;
+        }
+    }
+
+        println!("Done!");
+
+    if found {
+        for file in std::fs::read_dir(MC_DATA.mods_dir.clone()).unwrap() {
+            let file = file.unwrap();
+            match std::fs::remove_file(file.path()) {
+                Ok(_) => {},
+                Err(_) => {}
+            }
+        }
+        found_fabric.set(true);
+        check_complete.set(true);
+        fabric_version.set(format!("Fabric {} for Minecraft {}", ver, mc_version));
+        found_fabric.needs_update();
+        check_complete.needs_update();
+    } else {
+        found_fabric.set(false);
+        check_complete.set(true);
+        found_fabric.needs_update();
+        check_complete.needs_update();
+    }
+}
+
+fn FabricCheckPage(cx: Scope) -> Element {
+    let check_complete = use_state(&cx, || false);
+    let has_fabric = use_state(&cx, || false);
+    let fabric_version = use_state(&cx, || String::from(""));
+
+    let atoms = use_atom_root(&cx);
+    let state = use_read(&cx, STATE);
+
+    let mc_version = state.manifest.lookup(state.selected_profile).clone().meta.version;
+
+    use_future(&cx, (), |_| fabric_install(mc_version, has_fabric.clone(), check_complete.clone(), fabric_version.clone()));
+
+    cx.render(rsx! {
+        div {
+            id: "fabriccheckpage",
+            class: "flex-1 flex-col flex justify-center w-full",
+            match *check_complete.current() {
+                true => rsx! {
+                    div {
+                        class: "bg-slate-900 rounded-xl p-6 m-6 mx-auto flex-col w-1/2",
+                        match *has_fabric.current() {
+                            true => {
+                                let mut state_cpy = state.clone();
+                                state_cpy.page = Page::DownloadPage;
+                                atoms.set(STATE.unique_id(), state_cpy);
+                                rsx! {""}
+                            },
+                            false => {
+                                rsx! {
+                                    div {
+                                        class: "flex flex-col",
+                                        p {
+                                            class: "text-xl text-orange-600 font-bold text-center",
+                                            "Could not install Fabric!"
+                                        },
+                                        p {
+                                            class: "text-xl text-slate-100 text-center",
+                                            "Try re-running the program, or download and install Fabric manually."
+                                        },
+                                        p {
+                                            class: "text-sm text-slate-500 italic text-center",
+                                            "Fabric Mod Loader can be downloaded from ",
+                                            a {
+                                                class: "text-sm text-sky-500 italic underline",
+                                                href: "https://fabricmc.net/use/installer/",
+                                                "https://fabricmc.net/use/installer/"
+                                            }
+                                        },
+                                        button {
+                                            class: "bg-red-500 hover:bg-red-700 rounded-xl p-6 m-6 mb-0 mx-auto align-center",
+                                            onclick: move |_| {
+                                                let mut state_cpy = state.clone();
+                                                state_cpy.page = Page::ProfilePage;
+                                                atoms.set(STATE.unique_id(), state_cpy);
+                                            },
+                                            img {
+                                                src: "https://tallie.dev/modtool/assets/fa-arrow-left.svg",
+                                                height: "32",
+                                                width: "32",
+                                                class: "mx-auto fill-slate-100"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                false => {
+                    rsx! {
+                        h2 {
+                            class: "text-6xl text-slate-100 mx-auto text-center font-bold p-6",
+                            "Installing Fabric..."
+                        },
+                        div {
+                            class: "bg-slate-900 rounded-xl p-6 m-6 mx-auto flex-col w-1/2",
+                            p {
+                                class: "text-xl text-slate-100 font-bold text-center",
+                                "Fabric is now installing."
+                            },
+                            p {
+                                class: "text-sm text-slate-500 italic text-center",
+                                "Fabric Mod Loader will install automatically. Please wait for the install to finish."
+                            }
+                            img {
+                                src: "https://tallie.dev/modtool/assets/loader-slate-900.gif",
+                                class: "mx-auto pt-6 w-1/2",
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    })
 }
 
 fn ForgeCheckPage(cx: Scope) -> Element {
@@ -440,7 +637,9 @@ fn ForgeCheckPage(cx: Scope) -> Element {
     let atoms = use_atom_root(&cx);
     let state = use_read(&cx, STATE);
 
-    use_future(&cx, (), |_| forge_install(String::from("1.12.2"), has_forge.clone(), check_complete.clone(), forge_version.clone()));
+    let mc_version = state.manifest.lookup(state.selected_profile).clone().meta.version;
+
+    use_future(&cx, (), |_| forge_install(mc_version, has_forge.clone(), check_complete.clone(), forge_version.clone()));
 
 /*    if *check_complete.get() && *has_forge.get() {
         let mut state_cpy = state.clone();
@@ -774,7 +973,8 @@ fn DownloadPage(cx: Scope) -> Element {
 
     let current_profile = state.manifest.lookup(state.selected_profile).clone();
     let mut mod_info_with_status = Vec::new();
-    for modinfo in current_profile.mods.iter() {
+
+   for modinfo in current_profile.mods.iter() {
         let modinfo = modinfo.clone();
         mod_info_with_status.push(ModDownload {
             name: modinfo.name,
@@ -951,6 +1151,7 @@ fn DownloadItem(cx: Scope, modinfo: ModDownload, downloads_complete: UseState<i3
                 .send()
                 .await.unwrap();
             let content_length = res.content_length().unwrap().clone();
+            println!("{:#?}", res);
 
 			let path = Path::new(&modinfo.url);
 			let filename = path.file_name().unwrap();
@@ -1067,7 +1268,7 @@ fn ProfilePage(cx: Scope) -> Element {
                     },
                     ModLoader::Fabric => {
                         let mut state_cpy = state.clone();
-                        state_cpy.page = Page::DownloadPage;
+                        state_cpy.page = Page::FabricCheckPage;
                         atoms.set(STATE.unique_id(), state_cpy);
                     }
                 }
