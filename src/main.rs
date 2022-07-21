@@ -14,7 +14,9 @@ use std::cmp::Ordering;
 use async_std;
 use lazy_static::*;
 
-static APP_VERSION: &'static str = "2.0.0";
+use std::os::windows::process::CommandExt;
+
+static APP_VERSION: &'static str = "2.0.1";
 
 #[derive(Copy, Clone)]
 enum Page {
@@ -336,16 +338,34 @@ async fn java_check(has_java: UseState<bool>, check_complete: UseState<bool>, ja
         true => &["-version"],
         false => &["--version"]
     };
-    let process = match process::Command::new(com)
-        .args(args)
-        .output() {
-            Ok(process) => process,
-            Err(_) => {
-                check_complete.set(true);
-                has_java.set(false);
-                return
+    let process = match cfg!(windows) {
+        true => {
+            match process::Command::new(com)
+            .args(args)
+            .creation_flags(0x08000000)
+            .output() {
+                Ok(process) => process,
+                Err(_) => {
+                    check_complete.set(true);
+                    has_java.set(false);
+                    return
+                }
             }
-        };
+        },
+        false => {
+            match process::Command::new(com)
+            .args(args)
+            .output() {
+                Ok(process) => process,
+                Err(_) => {
+                    check_complete.set(true);
+                    has_java.set(false);
+                    return
+                }
+            }
+        }
+
+    };
     let text = String::from_utf8(process.stdout).unwrap();
     let text_lines: Vec<&str> = text.split("\n").collect();
     java_version.set(format!("{}", text_lines[0]));
@@ -407,9 +427,15 @@ async fn forge_install(mc_version: String, found_forge: UseState<bool>, check_co
 
     let com = "java";
     let args = &["-jar", filepath.as_str()];
-    let _com = process::Command::new(com)
-        .args(args)
-        .output().unwrap();
+    let _com = match cfg!(windows) {
+        true => process::Command::new(com)
+            .args(args)
+            .creation_flags(0x08000000)
+            .output().unwrap(),
+        false => process::Command::new(com)
+            .args(args)
+            .output().unwrap()
+    };
     let profiles_dir = MC_DATA.profiles_dir.clone();
     let current_installs = std::fs::read_dir(profiles_dir).unwrap();
     let mut found = false;
@@ -489,10 +515,15 @@ async fn fabric_install(mc_version: String, found_fabric: UseState<bool>, check_
 
     let com = "java";
     let args = &["-jar", filepath.as_str(), "client", "-mcversion", mc_version.as_str(), "-dir", MC_DATA.base_dir.as_str()];
-    let _com = process::Command::new(com)
-        .args(args)
-        .output().unwrap();
-
+    let _com = match cfg!(windows) {
+        true => process::Command::new(com)
+            .args(args)
+            .creation_flags(0x08000000)
+            .output().unwrap(),
+        false => process::Command::new(com)
+            .args(args)
+            .output().unwrap()
+    };
     let profiles_dir = MC_DATA.profiles_dir.clone();
     let current_installs = std::fs::read_dir(profiles_dir).unwrap();
     let mut found = false;
