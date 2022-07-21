@@ -14,7 +14,7 @@ use std::cmp::Ordering;
 use async_std;
 use lazy_static::*;
 
-static APP_VERSION: &'static str = "2.0-alpha3";
+static APP_VERSION: &'static str = "2.0.0";
 
 #[derive(Copy, Clone)]
 enum Page {
@@ -61,7 +61,8 @@ struct Mod {
     name: String,
     url: String,
     version: String,
-    provider: ModProvider
+    provider: ModProvider,
+    size: i32
 }
 
 #[derive(Clone, PartialEq)]
@@ -109,7 +110,7 @@ struct Manifest {
 struct MCData {
     base_dir: String,
     mods_dir: String,
-    packs_dir: String,
+//    packs_dir: String,
     profiles_dir: String
 }
 
@@ -138,9 +139,10 @@ static STATE: Atom<AppState> = |_| AppState {
     }
 };
 
-static MOD_DOWNLOADS: Atom<ModDownloads> = |_| { ModDownloads {
-    downloads: Vec::new()
-}};
+
+static NUM_DOWNLOADS: Atom<i32> = |_| {
+    0
+};
 
 /*
 struct DownloadHandler {
@@ -176,7 +178,7 @@ lazy_static! {
             base_dir: base_dir.to_string(),
             mods_dir: { base_dir.clone() + "mods" }.to_string(),
             profiles_dir: { base_dir.clone() + "versions" }.to_string(),
-            packs_dir: { base_dir.clone() + "resourcepacks" }.to_string()
+//            packs_dir: { base_dir.clone() + "resourcepacks" }.to_string()
         }
     };
 }
@@ -231,7 +233,6 @@ fn PageRouter(cx: Scope) -> Element {
                 Page::FabricCheckPage => {
                     rsx! { FabricCheckPage {} }
                 },
-                _ => rsx! { p{}  }
             }
         }
     })
@@ -258,7 +259,7 @@ fn HomePage(cx: Scope) -> Element {
               },
               span {
                   class: "text-2xl text-slate-600",
-                  " v1.0"
+                  " v{APP_VERSION}"
               }
             }
             button {
@@ -350,7 +351,6 @@ async fn java_check(has_java: UseState<bool>, check_complete: UseState<bool>, ja
     java_version.set(format!("{}", text_lines[0]));
     check_complete.set(true);
     has_java.set(true);
-    println!("{}", text_lines[0]);
 }
 
 async fn forge_install(mc_version: String, found_forge: UseState<bool>, check_complete: UseState<bool>, forge_ver: UseState<String>) {
@@ -391,7 +391,6 @@ async fn forge_install(mc_version: String, found_forge: UseState<bool>, check_co
     }
 
     let installer_url = format!("https://maven.minecraftforge.net/net/minecraftforge/forge/{0}-{1}/forge-{0}-{1}-installer.jar", mc_version, forge_version);
-    println!("Downloading Forge installer from {}", installer_url);
     let res = HTTP_CLIENT
         .get(installer_url.clone())
         .header("User-Agent", format!("Starkiller645/modtool_rs/{APP_VERSION} (tallie@tallie.dev)"))
@@ -402,17 +401,15 @@ async fn forge_install(mc_version: String, found_forge: UseState<bool>, check_co
     let path = Path::new(&url);
     let filename = path.file_name().unwrap();
     let filepath = format!("{}{}", CACHE_DIR.as_str(), filename.to_str().unwrap());
-    println!("{}", filepath);
     let mut fhandle = File::create(filepath.clone()).unwrap();
     let mut content = Cursor::new(res.bytes().await.unwrap());
     std::io::copy(&mut content, &mut fhandle).unwrap();
 
     let com = "java";
     let args = &["-jar", filepath.as_str()];
-    let com = process::Command::new(com)
+    let _com = process::Command::new(com)
         .args(args)
         .output().unwrap();
-    println!("{}", String::from_utf8(com.stdout).unwrap());
     let profiles_dir = MC_DATA.profiles_dir.clone();
     let current_installs = std::fs::read_dir(profiles_dir).unwrap();
     let mut found = false;
@@ -422,7 +419,6 @@ async fn forge_install(mc_version: String, found_forge: UseState<bool>, check_co
         }
     }
 
-    println!("Done!");
 
     if found {
         for file in std::fs::read_dir(MC_DATA.mods_dir.clone()).unwrap() {
@@ -477,7 +473,6 @@ async fn fabric_install(mc_version: String, found_fabric: UseState<bool>, check_
     }
 
     let installer_url = format!("https://maven.fabricmc.net/net/fabricmc/fabric-installer/0.11.0/fabric-installer-0.11.0.jar");
-    println!("Downloading Fabric installer from {}", installer_url);
     let res = HTTP_CLIENT
         .get(installer_url.clone())
         .header("User-Agent", format!("Starkiller645/modtool_rs/{APP_VERSION} (tallie@tallie.dev)"))
@@ -488,18 +483,16 @@ async fn fabric_install(mc_version: String, found_fabric: UseState<bool>, check_
     let path = Path::new(&url);
     let filename = path.file_name().unwrap();
     let filepath = format!("{}{}", CACHE_DIR.as_str(), filename.to_str().unwrap());
-    println!("{}", filepath);
     let mut fhandle = File::create(filepath.clone()).unwrap();
     let mut content = Cursor::new(res.bytes().await.unwrap());
     std::io::copy(&mut content, &mut fhandle).unwrap();
 
     let com = "java";
     let args = &["-jar", filepath.as_str(), "client", "-mcversion", mc_version.as_str(), "-dir", MC_DATA.base_dir.as_str()];
-    let com = process::Command::new(com)
+    let _com = process::Command::new(com)
         .args(args)
         .output().unwrap();
 
-    println!("{}", String::from_utf8(com.stdout).unwrap());
     let profiles_dir = MC_DATA.profiles_dir.clone();
     let current_installs = std::fs::read_dir(profiles_dir).unwrap();
     let mut found = false;
@@ -510,7 +503,6 @@ async fn fabric_install(mc_version: String, found_fabric: UseState<bool>, check_
         }
     }
 
-        println!("Done!");
 
     if found {
         for file in std::fs::read_dir(MC_DATA.mods_dir.clone()).unwrap() {
@@ -954,19 +946,6 @@ fn ProfileInfo(cx: Scope, meta: ProfileMeta) -> Element {
     })
 }
 
-/*async fn download_all_mod_files(ar: Rc<AtomRoot>) {
-    let downloads_list = (*ar.read(MOD_DOWNLOADS)).clone();
-    for download in downloads_list.downloads.iter() {
-        async {
-            let mut download = download.clone();
-            thread::sleep(Duration::from_millis(2000));
-            download.status = Download::Complete;
-            ar.set(MOD_DOWNLOADS.unique_id(), downloads_list.clone());
-        }.await;
-        ar.force_update(MOD_DOWNLOADS.unique_id());
-    }
-}*/
-
 fn DownloadPage(cx: Scope) -> Element {
     let ar = use_atom_root(&cx);
     let mut state = (*ar.read(STATE)).clone();
@@ -1135,23 +1114,37 @@ fn DownloadItem(cx: Scope, modinfo: ModDownload, downloads_complete: UseState<i3
 
     let download_state = use_state(&cx, || Download::InProgress);
 
+    let ar = use_atom_root(&cx);
+
     use_future(&cx, (),  |_| {
         let downloads_complete = downloads_complete.clone();
         let download_state = download_state.clone();
         let mods_dir = MC_DATA.mods_dir.clone();
         let modinfo = modinfo.clone();
+
+        let ar = ar.clone();
+
         async move {
             let sep = match cfg!(windows) {
                 true => "\\",
                 false => "/",
             };
+
+            while *ar.read(NUM_DOWNLOADS) >= 4 {
+                async_std::task::sleep(std::time::Duration::from_millis(100)).await;
+            }
+
+            ar.set(NUM_DOWNLOADS.unique_id(), *ar.read(NUM_DOWNLOADS) + 1);
+
             let res = HTTP_CLIENT
                 .get(modinfo.url.clone())
                 .header("User-Agent", format!("Starkiller645/modtool-rs/{APP_VERSION} (tallie@tallie.dev)"))
                 .send()
                 .await.unwrap();
+
+            ar.set(NUM_DOWNLOADS.unique_id(), *ar.read(NUM_DOWNLOADS) - 1);
+
             let content_length = res.content_length().unwrap().clone();
-            println!("{:#?}", res);
 
 			let path = Path::new(&modinfo.url);
 			let filename = path.file_name().unwrap();
@@ -1162,13 +1155,10 @@ fn DownloadItem(cx: Scope, modinfo: ModDownload, downloads_complete: UseState<i3
 			std::io::copy(&mut content, &mut fhandle).unwrap();
 
             let thread = std::thread::spawn(move || {
-                println!("Thread started");
-                    println!("Downloading...");
                     let download = std::fs::File::open(filepath.clone()).unwrap();
                     let mut file_size = 0;
                     while file_size < content_length.clone() {
                         file_size = download.metadata().unwrap().len();
-                        println!("Downloaded {}B", file_size);
                         std::thread::sleep(std::time::Duration::from_millis(100));
                     }
                 }
