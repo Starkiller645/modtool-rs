@@ -14,6 +14,7 @@ use std::cmp::Ordering;
 use async_std;
 use lazy_static::*;
 
+#[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
 static APP_VERSION: &'static str = "2.0.1";
@@ -427,15 +428,19 @@ async fn forge_install(mc_version: String, found_forge: UseState<bool>, check_co
 
     let com = "java";
     let args = &["-jar", filepath.as_str()];
-    let _com = match cfg!(windows) {
-        true => process::Command::new(com)
+    #[cfg(target_os = "windows")]
+    {
+        let _com = process::Command::new(com)
             .args(args)
             .creation_flags(0x08000000)
-            .output().unwrap(),
-        false => process::Command::new(com)
+            .output().unwrap();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _com = process::Command::new(com)
             .args(args)
-            .output().unwrap()
-    };
+            .output().unwrap();
+    }    
     let profiles_dir = MC_DATA.profiles_dir.clone();
     let current_installs = std::fs::read_dir(profiles_dir).unwrap();
     let mut found = false;
@@ -514,16 +519,27 @@ async fn fabric_install(mc_version: String, found_fabric: UseState<bool>, check_
     std::io::copy(&mut content, &mut fhandle).unwrap();
 
     let com = "java";
+    println!("{}", com);
     let args = &["-jar", filepath.as_str(), "client", "-mcversion", mc_version.as_str(), "-dir", MC_DATA.base_dir.as_str()];
-    let _com = match cfg!(windows) {
-        true => process::Command::new(com)
+    for arg in args {
+        println!("{} ", arg);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let _com = process::Command::new(com)
             .args(args)
             .creation_flags(0x08000000)
-            .output().unwrap(),
-        false => process::Command::new(com)
+            .output().unwrap();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _com = process::Command::new(com)
             .args(args)
-            .output().unwrap()
-    };
+            .output().unwrap();
+    }
+
     let profiles_dir = MC_DATA.profiles_dir.clone();
     let current_installs = std::fs::read_dir(profiles_dir).unwrap();
     let mut found = false;
