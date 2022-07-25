@@ -5,13 +5,13 @@ use dioxus::prelude::*;
 use fermi::*;
 use std::fs::File;
 use std::path::Path;
-use std::io::Cursor;
+use std::io::{Cursor, Write};
 use std::process;
 use std::rc::Rc;
 use std::env;
 use serde::{Serialize, Deserialize};
 use std::cmp::Ordering;
-use async_std;
+use async_std::stream::StreamExt;
 use lazy_static::*;
 
 #[cfg(target_os = "windows")]
@@ -343,7 +343,6 @@ async fn java_check(has_java: UseState<bool>, check_complete: UseState<bool>, ja
         true => {
             match process::Command::new(com)
             .args(args)
-            .creation_flags(0x08000000)
             .output() {
                 Ok(process) => process,
                 Err(_) => {
@@ -438,6 +437,8 @@ async fn forge_install(mc_version: String, found_forge: UseState<bool>, check_co
     #[cfg(not(target_os = "windows"))]
     {
         let _com = process::Command::new(com)
+            .output().unwrap(),
+        false => process::Command::new(com)
             .args(args)
             .output().unwrap();
     }    
@@ -536,6 +537,8 @@ async fn fabric_install(mc_version: String, found_fabric: UseState<bool>, check_
     #[cfg(not(target_os = "windows"))]
     {
         let _com = process::Command::new(com)
+            .output().unwrap(),
+        false => process::Command::new(com)
             .args(args)
             .output().unwrap();
     }
@@ -1160,6 +1163,9 @@ fn DownloadPage(cx: Scope) -> Element {
 fn DownloadItem(cx: Scope, modinfo: ModDownload, downloads_complete: UseState<i32>) -> Element {
 
     let download_state = use_state(&cx, || Download::InProgress);
+    let downloaded_bytes = use_state(&cx, || 0 as u64);
+    let total_bytes = use_state(&cx, || 1 as u64);
+    let percentage = use_state(&cx, || 0 as u64);
 
     let ar = use_atom_root(&cx);
 
@@ -1168,6 +1174,9 @@ fn DownloadItem(cx: Scope, modinfo: ModDownload, downloads_complete: UseState<i3
         let download_state = download_state.clone();
         let mods_dir = MC_DATA.mods_dir.clone();
         let modinfo = modinfo.clone();
+        let mut downloaded_bytes = downloaded_bytes.clone();
+        let total_bytes = total_bytes.clone();
+        let percentage = percentage.clone();
 
         let ar = ar.clone();
 
@@ -1176,6 +1185,11 @@ fn DownloadItem(cx: Scope, modinfo: ModDownload, downloads_complete: UseState<i3
                 true => "\\",
                 false => "/",
             };
+
+            let path = Path::new(&modinfo.url);
+			let filename = path.file_name().unwrap();
+			let filepath = mods_dir.clone() + sep + filename.to_str().unwrap();
+            let mut fhandle = File::create(filepath.clone()).unwrap();
 
             while *ar.read(NUM_DOWNLOADS) >= 4 {
                 async_std::task::sleep(std::time::Duration::from_millis(100)).await;
@@ -1189,29 +1203,19 @@ fn DownloadItem(cx: Scope, modinfo: ModDownload, downloads_complete: UseState<i3
                 .send()
                 .await.unwrap();
 
-            ar.set(NUM_DOWNLOADS.unique_id(), *ar.read(NUM_DOWNLOADS) - 1);
-
             let content_length = res.content_length().unwrap().clone();
+            total_bytes.set(content_length);
 
-			let path = Path::new(&modinfo.url);
-			let filename = path.file_name().unwrap();
-			let filepath = mods_dir.clone() + sep + filename.to_str().unwrap();
-            let mut fhandle = File::create(filepath.clone()).unwrap();
+            let mut bytes_stream = res.bytes_stream();
+            while let Some(item) = bytes_stream.next().await {
+                let chunk = item.or(Err(format!("Error downloading file!"))).unwrap();
+                fhandle.write_all(&chunk)
+                    .unwrap();
+                downloaded_bytes += chunk.len() as u64;
+                percentage.set(((*downloaded_bytes.current() as f64 / *total_bytes.current() as f64) * 100.0) as u64);
+            }
 
-			let mut content = Cursor::new(res.bytes().await.unwrap());
-			std::io::copy(&mut content, &mut fhandle).unwrap();
-
-            let thread = std::thread::spawn(move || {
-                    let download = std::fs::File::open(filepath.clone()).unwrap();
-                    let mut file_size = 0;
-                    while file_size < content_length.clone() {
-                        file_size = download.metadata().unwrap().len();
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                    }
-                }
-            );
-
-            thread.join().unwrap();
+            ar.set(NUM_DOWNLOADS.unique_id(), *ar.read(NUM_DOWNLOADS) - 1);
 
             download_state.set(Download::Complete);
             download_state.needs_update();
@@ -1235,6 +1239,16 @@ fn DownloadItem(cx: Scope, modinfo: ModDownload, downloads_complete: UseState<i3
         ModProvider::Unknown => String::from("text-slate-300")
     };
 
+    let percentage_decimal = *downloaded_bytes.current() as f64 / *total_bytes.current() as f64;
+    let percent = percentage_decimal * 100.0;
+    let red = 252 - (percentage_decimal * 200.0) as u64;
+    let green = 165 + (percentage_decimal * 46.0) as u64;
+    let blue = 165 - (percentage_decimal * 12.0) as u64;
+
+    let hex = format!("#{:X}{:X}{:X}", red, green, blue);
+
+    let mb = format!("{:.2}MB", *total_bytes.current() as f64 / 1000000.0);
+
     cx.render(rsx! {
         div {
             class: "flex flex-row bg-slate-900 justify-end p-6 rounded-xl gap-6 flex-1 grow",
@@ -1251,6 +1265,21 @@ fn DownloadItem(cx: Scope, modinfo: ModDownload, downloads_complete: UseState<i3
                         class: "{provider_color}",
                         "{provider}"
                     }
+                },
+                p {
+                    class: "text-slate-500 font-bold text-right",
+                    "{mb}"
+                },
+                div {
+                    class: "bg-slate-800 rounded-xl text-slate-100 float-right w-full h-2",
+                    div {
+                        style: "width: {percent}%; background-color: {hex}; min-width: 0.5rem;",
+                        class: "bg-orange-500 h-full rounded-xl",
+                    }
+                }
+                p {
+                    class: "text-slate-100 text-right font-bold py-2",
+                    "{percentage}%"
                 }
             }
             match *download_state.current() {

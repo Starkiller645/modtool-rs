@@ -17,7 +17,7 @@ console_error_panic_hook = "0.1.7"
 fermi = "0.2.1"
 
 tokio = { version = "0.2.21", features = ["full", "time"] }
-reqwest = { version = "0.11.11", features = ["json", "blocking"] }
+reqwest = { version = "0.11.11", features = ["json", "blocking", "stream"] }
 lazy_static = "1.4.0"
 serde = "1.0.139"
 serde_json = "1.0.82"
