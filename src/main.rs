@@ -17,7 +17,7 @@ use lazy_static::*;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
-static APP_VERSION: &'static str = "2.0.1";
+static APP_VERSION: &'static str = "2.1.0";
 
 #[derive(Copy, Clone)]
 enum Page {
