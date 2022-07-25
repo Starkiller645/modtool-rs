@@ -6,6 +6,9 @@ use fermi::*;
 use std::fs::File;
 use std::path::Path;
 use std::io::{Cursor, Write};
+use std::io::prelude::*;
+use chrono::{DateTime, Utc, SecondsFormat};
+use std::collections::HashMap;
 use std::process;
 use std::rc::Rc;
 use std::env;
@@ -108,6 +111,39 @@ struct ModDownloads {
 #[derive(Serialize, Deserialize, Clone)]
 struct Manifest {
     profiles: Vec<Profile>
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct LauncherProfile {
+    created: Option<String>,
+    icon: String,    // Should be base64 encoded PNG
+    javaArgs: Option<String>,
+    lastUsed: String,
+    lastVersionId: String,
+    name: String,
+    r#type: String
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct LauncherSettings {
+    crashAssistance: bool,
+    enableAdvanced: bool,
+    enableAnalytics: bool,
+    enableHistorical: bool,
+    enableReleases: bool,
+    enableSnapshots: bool,
+    keepLauncherOpen: bool,
+    profileSorting: String,
+    showGameLog: bool,
+    showMenu: bool,
+    soundOn: bool
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct LauncherProfiles {
+    profiles: HashMap<String, LauncherProfile>,
+    settings: LauncherSettings,
+    version: i32
 }
 
 struct MCData {
@@ -291,6 +327,8 @@ fn HomePage(cx: Scope) -> Element {
 fn FinishedPage(cx: Scope) -> Element {
     let state = use_read(&cx, STATE);
 
+	let atoms = use_atom_root(&cx);
+
     //use_coroutine(&cx, |rx| to_manifest_page(rx, atoms.clone()));
     let download_number = state.download_list.downloads.len().clone();
     let profile_name = state.manifest.lookup(state.selected_profile).meta.name.clone();
@@ -328,7 +366,21 @@ fn FinishedPage(cx: Scope) -> Element {
                     class: "text-sm text-slate-500 italic text-center",
                     "You can safely close this application now."
                 }
-            }
+            },
+			button {
+				class: "bg-green-500 hover:bg-green-700 rounded-xl justify-self-end p-6 self-center",
+				onclick: move |_| {
+					let mut state_cpy = state.clone();
+					state_cpy.page = Page::ProfilePage;
+					atoms.set(STATE.unique_id(), state_cpy);
+				},
+				img {
+					src: "https://tallie.dev/modtool/assets/fa-home.svg",
+					height: "32",
+					width: "32",
+					class: "mx-auto fill-slate-100"
+				}
+			}
         }
     })
 }
@@ -518,11 +570,7 @@ async fn fabric_install(mc_version: String, found_fabric: UseState<bool>, check_
     std::io::copy(&mut content, &mut fhandle).unwrap();
 
     let com = "java";
-    println!("{}", com);
     let args = &["-jar", filepath.as_str(), "client", "-mcversion", mc_version.as_str(), "-dir", MC_DATA.base_dir.as_str()];
-    for arg in args {
-        println!("{} ", arg);
-    }
 
     #[cfg(target_os = "windows")]
     {
@@ -1017,40 +1065,62 @@ fn DownloadPage(cx: Scope) -> Element {
     };
     ar.set(STATE.unique_id(), state.clone());
 
-    /*use_coroutine(&cx, |_: UnboundedReceiver<()>| {
-        let ar = ar.clone();
-        let state = (*ar.read(STATE)).clone();
+    use_future(&cx, (), |_| { 
+        let state = state.clone();
         async move {
-            let ar = ar.clone();
-            let mut state: AppState = (*ar.read(STATE)).clone();
             let current_profile = state.manifest.lookup(state.selected_profile).clone();
 
+            let profiles_file = MC_DATA.base_dir.clone() + "launcher_profiles.json";
+            let mut data = String::new(); 
+			{
+	            let mut file = File::open(profiles_file).unwrap();
+		        file.read_to_string(&mut data).unwrap();
+			}
+            let mut profiles_json: LauncherProfiles = serde_json::from_str(&data).unwrap();
 
-            ar.set(STATE.unique_id(), state.clone());
-            println!("State set complete");
-            println!("Downloading mods");
-			println!("{}", state.download_list.downloads.len());
-            let mut download_list_copy = state.download_list.downloads.clone();
-            
-            let i: usize = 0;
-            for download in state.download_list.downloads.iter() {
-                println!("{}", download.name);
-                thread::sleep(Duration::from_millis(1000));
-                download_list_copy[i].status = Download::Complete;
-                let mut current_state = (*ar.read(STATE)).clone();
-                current_state.download_list = ModDownloads {
-                    downloads: download_list_copy.clone()
+            let loader: &str = match current_profile.meta.loader {
+                ModLoader::Fabric => "fabric",
+                ModLoader::Forge => "forge",
+            };
+
+            let key = format!("modtool-rs-{}-{}-{}", loader, current_profile.meta.version, current_profile.meta.id);
+
+			let mut version = String::from("");
+			for file in std::fs::read_dir(MC_DATA.profiles_dir.clone()).unwrap() {
+				let file = file.unwrap();
+				let file_str = file.file_name().into_string().unwrap();
+				if file_str.contains(loader) && file_str.contains(current_profile.meta.version.as_str()) {
+					version = file.file_name().into_string().unwrap()
+				}
+			}
+
+            if !profiles_json.profiles.contains_key(&key) {
+
+                let date: DateTime<Utc> = Utc::now();
+                let date_str: String = date.to_rfc3339_opts(SecondsFormat::Millis, true); 
+
+                let profile = LauncherProfile {
+                    created: Some(date_str),
+                    lastUsed: String::from("1970-01-02T00:00:00.000Z"),
+                    lastVersionId: version,
+                    javaArgs: Some(String::from("-Dterminal.jline=false -Dterminal.ansi=true -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200 -XX:+UnlockExperimentalVMOptions -XX:+DisableExplicitGC -XX:+AlwaysPreTouch -XX:G1HeapWastePercent=5 -XX:G1MixedGCCountTarget=4 -XX:G1MixedGCLiveThresholdPercent=90 -XX:G1RSetUpdatingPauseTimePercent=5 -XX:SurvivorRatio=32 -XX:+PerfDisableSharedMem -XX:MaxTenuringThreshold=1 -XX:G1NewSizePercent=30 -XX:G1MaxNewSizePercent=40 -XX:G1HeapRegionSize=8M -XX:G1ReservePercent=20 -XX:InitiatingHeapOccupancyPercent=15 -Dusing.aikars.flags=https://mcflags.emc.gs -Daikars.new.flags=true")),
+                    name: format!("{} (ModTool RS)", current_profile.meta.name),
+                    r#type: String::from("custom"),
+                    icon: String::from("data:image/png;base64,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")
                 };
-                ar.set(STATE.unique_id(), current_state.clone());
-                let state_new = (*ar.read(STATE)).clone();
-                match state_new.download_list.downloads[i].status {
-                    Download::Complete => println!("Complete!"),
-                    Download::InProgress => println!("Still in progress :("),
-                }
-                ar.force_update(STATE.unique_id());
+                    
+                profiles_json.profiles.insert(key, profile);
+
+				let profiles_file = MC_DATA.base_dir.clone() + "launcher_profiles.json";
+				let mut file = std::fs::OpenOptions::new().write(true).open(profiles_file).unwrap();
+
+                match file.write(&serde_json::to_string_pretty(&profiles_json).unwrap().into_bytes()) {
+					Ok(_) => {},
+					Err(err) => println!("{}", err)
+				};
             }
         }
-    });*/
+    });
 
     let state = use_read(&cx, STATE);
     let current_profile = state.manifest.lookup(state.selected_profile).clone();
