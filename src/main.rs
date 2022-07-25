@@ -437,8 +437,6 @@ async fn forge_install(mc_version: String, found_forge: UseState<bool>, check_co
     #[cfg(not(target_os = "windows"))]
     {
         let _com = process::Command::new(com)
-            .output().unwrap(),
-        false => process::Command::new(com)
             .args(args)
             .output().unwrap();
     }    
@@ -537,8 +535,6 @@ async fn fabric_install(mc_version: String, found_fabric: UseState<bool>, check_
     #[cfg(not(target_os = "windows"))]
     {
         let _com = process::Command::new(com)
-            .output().unwrap(),
-        false => process::Command::new(com)
             .args(args)
             .output().unwrap();
     }
